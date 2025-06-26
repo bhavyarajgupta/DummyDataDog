@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("DummyDataDog")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6e73dc765b83c0818202a81d7ed95d2c321bc66d")]
 [assembly: System.Reflection.AssemblyProductAttribute("DummyDataDog")]
 [assembly: System.Reflection.AssemblyTitleAttribute("DummyDataDog")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
