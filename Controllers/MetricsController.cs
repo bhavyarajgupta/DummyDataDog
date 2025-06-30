@@ -1,30 +1,79 @@
-using System;
+using DummyDataDog.Data;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using System;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace DummyDataDog.Controllers
 {
     [ApiController]
-    [Route("api/metrics")]
+    [Route("api/[controller]")]
     public class MetricsController : ControllerBase
     {
-        [HttpGet("cpu-usage")]
-        public IActionResult GetCpuUsage()
-        {
-            var metrics = new
-            {
-                metric = "system.cpu.user",
-                host = "server-1",
-                interval = "1m",
-                unit = "percent",
-                data = new[]
-                {
-                    new { timestamp = DateTime.UtcNow.AddMinutes(-3), value = 35.5 },
-                    new { timestamp = DateTime.UtcNow.AddMinutes(-2), value = 37.8 },
-                    new { timestamp = DateTime.UtcNow.AddMinutes(-1), value = 40.2 }
-                }
-            };
+        private readonly AppDbContext _context;
 
-            return Ok(metrics);
+        public MetricsController(AppDbContext context)
+        {
+            _context = context;
+        }
+        [HttpGet("{projectId}/range")]
+        public async Task<IActionResult> GetMetricsByDateRange(int projectId, DateTime from, DateTime to)
+        {
+            try
+            {
+                var metrics = await _context.Metrics
+                    .Where(m => m.ProjectId == projectId && m.CollectedAt >= from && m.CollectedAt <= to)
+                    .OrderByDescending(m => m.CollectedAt)
+                    .Select(m => new
+                    {
+                        m.Id,
+                        m.MetricType,
+                        m.Value,
+                        m.CollectedAt
+                    })
+                    .ToListAsync();
+
+                return Ok(metrics);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+
+        [HttpGet("{projectId}/cpu-usage")]
+        public async Task<IActionResult> GetCpuUsageByProject(int projectId)
+        {
+            try
+            {
+                var metrics = await _context.Metrics
+                    .Where(m => m.ProjectId == projectId && m.MetricType == "CPU")
+                    .Include(m => m.Project)
+                    .OrderByDescending(m => m.CollectedAt)
+                    .Take(50)
+                    .Select(m => new
+                    {
+                        m.Id,
+                        m.MetricType,
+                        m.Value,
+                        ProjectName = m.Project.Name,
+                        m.CollectedAt
+                    })
+                    .ToListAsync();
+
+                return Ok(metrics);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Internal server error while fetching metrics.",
+                    error = ex.Message
+                });
+            }
         }
     }
 }
