@@ -5,10 +5,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Configuration;
 
-
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
+// Add services to the container
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -17,19 +16,10 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-
-// builder.Services.AddCors(options =>
-// {
-//     options.AddPolicy("AllowAll", policy =>
-//     {
-//         policy.AllowAnyOrigin()
-//               .AllowAnyHeader()
-//               .AllowAnyMethod();
-//     });
-// });
+// Configure CORS
 builder.Services.AddCors(options =>
 {
-    options.AddDefaultPolicy(policy =>
+    options.AddPolicy("AllowFrontend", policy =>
     {
         policy.WithOrigins("https://bgtai.bhavyarajgupta.info")
               .AllowAnyHeader()
@@ -38,13 +28,12 @@ builder.Services.AddCors(options =>
     });
 });
 
-
 var app = builder.Build();
 
+// Important: Apply CORS Middleware before Authorization and Routing
+app.UseCors("AllowFrontend");
 
-app.UseCors();
-
-// Configure the HTTP request pipeline.
+// Enable Swagger in Development and Production
 if (app.Environment.IsDevelopment() || app.Environment.IsProduction())
 {
     app.UseSwagger();
