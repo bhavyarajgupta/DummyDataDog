@@ -19,19 +19,21 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // Configure CORS
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowFrontend", policy =>
+    options.AddDefaultPolicy(policy =>
     {
         policy.WithOrigins("https://bgtai.bhavyarajgupta.info")
               .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials();
+              .AllowCredentials();  // Optional: Only if using cookies/auth
     });
 });
 
+
 var app = builder.Build();
 
+app.UseHttpsRedirection();
 // Important: Apply CORS Middleware before Authorization and Routing
-app.UseCors("AllowFrontend");
+app.UseCors();
 
 // Enable Swagger in Development and Production
 if (app.Environment.IsDevelopment() || app.Environment.IsProduction())
@@ -40,7 +42,7 @@ if (app.Environment.IsDevelopment() || app.Environment.IsProduction())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+
 
 app.UseAuthorization();
 
