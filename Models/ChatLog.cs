@@ -31,5 +31,8 @@ namespace DummyDataDog.Models
         [Column("timerange")]
         public string TimeRange { get; set; }
 
+        [Column("sessionid")]
+        public string SessionId { get; set; }
+
     }
 }

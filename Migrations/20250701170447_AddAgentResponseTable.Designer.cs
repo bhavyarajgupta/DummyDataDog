@@ -3,6 +3,7 @@ using System;
 using DummyDataDog.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,10 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace DummyDataDog.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250701170447_AddAgentResponseTable")]
+    partial class AddAgentResponseTable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -125,10 +127,6 @@ namespace DummyDataDog.Migrations
                     b.Property<string>("Response")
                         .HasColumnType("text")
                         .HasColumnName("response");
-
-                    b.Property<string>("SessionId")
-                        .HasColumnType("text")
-                        .HasColumnName("sessionid");
 
                     b.Property<string>("TimeRange")
                         .HasColumnType("text")

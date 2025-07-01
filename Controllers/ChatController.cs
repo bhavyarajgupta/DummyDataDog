@@ -28,6 +28,10 @@ namespace DummyDataDog.Controllers
             _httpClient = new HttpClient();
         }
 
+        public int UserId { get; set; }
+        public string SessionId { get; set; }
+
+
         [HttpPost]
         public async Task<IActionResult> Post([FromBody] ChatRequest request)
         {
@@ -37,37 +41,68 @@ namespace DummyDataDog.Controllers
             if (string.IsNullOrEmpty(apiKey) || string.IsNullOrEmpty(endpoint))
                 return BadRequest("Gemini API key or endpoint not configured.");
 
+            if (string.IsNullOrWhiteSpace(request.Message))
+                return BadRequest("Message cannot be empty.");
             string userMessage = request.Message.ToLower();
             string botReply;
 
+            // ✅ Number of distinct DataTypes for this user and session
+            var dataTypeCount = await _context.ChatLogs
+            .Where(c => c.UserId == request.UserId && c.SessionId == request.SessionId && !string.IsNullOrEmpty(c.DataType))
+            .CountAsync();
+
+
+            // ✅ Number of distinct ProjectIds for this user and session
+            var projectIdCount = await _context.ChatLogs
+            .Where(c => c.UserId == request.UserId && c.SessionId == request.SessionId && c.ProjectId.HasValue)
+            .CountAsync();
+
+
+            // ✅ Number of rows where TimeRange is not null/empty
+            var timeRangeCount = await _context.ChatLogs
+            .Where(c => c.UserId == request.UserId && c.SessionId == request.SessionId && !string.IsNullOrEmpty(c.TimeRange))
+            .CountAsync();
+
+
+            bool isContinuousChat = (dataTypeCount >= 2) && (projectIdCount >= 3) && (timeRangeCount >= 1);
+
             var recentChats = await _context.ChatLogs
-                .Where(c => c.UserId == request.UserId)
-                .OrderByDescending(c => c.CreatedAt)
-                .Take(20)
-                .ToListAsync();
+            .Where(c => c.UserId == request.UserId && c.SessionId == request.SessionId)
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(20)
+            .ToListAsync();
+
+            var lastChat = await _context.AgentResponses
+                .Where(c => c.userid == request.UserId && c.sessionid == request.SessionId)
+                .OrderByDescending(c => c.createdat)
+                .FirstOrDefaultAsync();
 
             int? projectId = recentChats.FirstOrDefault(c => c.ProjectId.HasValue)?.ProjectId;
             string dataType = recentChats.FirstOrDefault(c => !string.IsNullOrEmpty(c.DataType))?.DataType;
             string lastBotResponse = recentChats.FirstOrDefault(c => !string.IsNullOrEmpty(c.Response))?.Response;
+            if (lastChat != null)
+            {
+                lastBotResponse = lastChat.response;
+            }
 
-            bool hasContext = projectId.HasValue && !string.IsNullOrEmpty(dataType) && !string.IsNullOrEmpty(lastBotResponse);
+            bool hasContext = projectId.HasValue && !string.IsNullOrEmpty(dataType) && !string.IsNullOrEmpty(lastBotResponse) && isContinuousChat;
 
-            if (userMessage.Contains("hi") || userMessage.Contains("hello"))
+            if ((userMessage.Contains("hi") || userMessage.Contains("hello")) && !hasContext)
             {
                 botReply = "👋 Hello! I am BGTAI. Please tell me the Project Name (e.g., ANZ, HSBC, XYZ)?";
             }
-            else if (await _context.Projects.AnyAsync(p => p.Name.ToLower() == userMessage.ToLower()))
+            else if (!hasContext && await _context.Projects.AnyAsync(p => p.Name.ToLower() == userMessage.ToLower()))
             {
                 var project = await _context.Projects.FirstAsync(p => p.Name.ToLower() == userMessage.ToLower());
                 projectId = project.Id;
                 botReply = $"✅ Project '{project.Name}' selected. Now, which data type do you want me to analyze? (alerts, logs, metrics, services)";
             }
-            else if (userMessage.Contains("alerts") || userMessage.Contains("logs") || userMessage.Contains("metrics") || userMessage.Contains("services"))
+            else if (!hasContext && (userMessage.Contains("alerts") || userMessage.Contains("logs") || userMessage.Contains("metrics") || userMessage.Contains("services")))
             {
                 dataType = userMessage;
                 botReply = "✅ Got it! For what time range should I check? (Example: 'From yesterday 6PM to today 8AM')";
             }
-            else if (userMessage.Contains("from") && userMessage.Contains("to"))
+            else if (!hasContext && userMessage.Contains("from") && userMessage.Contains("to"))
             {
                 var timeRange = ParseTimeRange(userMessage);
 
@@ -82,16 +117,79 @@ namespace DummyDataDog.Controllers
                 else
                 {
                     var (fromTime, toTime) = timeRange.Value;
-                    string dataSummary = await FetchDataForLLM(projectId.Value, dataType, fromTime, toTime);
+                    string dataSummary = await FetchDataForLLM(request, projectId.Value, dataType, fromTime, toTime);
 
                     string finalPrompt = $"{dataSummary}\n\nPlease analyze this data and provide root cause analysis, impact, and fix recommendation.";
-                    botReply = await CallLLM_Gemini(finalPrompt, apiKey, endpoint);
+                    botReply = await CallLLM_Gemini(finalPrompt, apiKey, endpoint, request);
                 }
             }
             else if (hasContext)
             {
-                string followUpPrompt = $"User says: '{request.Message}'. Respond like a helpful human assistant, no need to restate earlier information.";
-                botReply = await CallLLM_Gemini(followUpPrompt, apiKey, endpoint);
+                if (IsFollowUpQuestion(request.Message))
+                {
+                    // Handle follow-up question
+                    var lastDataset = await _context.AgentResponses
+                        .Where(x => x.userid == request.UserId && x.sessionid == request.SessionId && x.type == "MainDataset")
+                        .OrderByDescending(x => x.createdat)
+                        .Select(x => x.datasent)
+                        .FirstOrDefaultAsync();
+
+                    var lastFollowup = await _context.AgentResponses
+                        .Where(x => x.userid == request.UserId && x.sessionid == request.SessionId && x.type == "FollowupQuery")
+                        .OrderByDescending(x => x.createdat)
+                        .FirstOrDefaultAsync();
+
+                    if (lastDataset != null && lastFollowup == null)
+                    {
+                        string followupPrompt = $"{lastDataset}\n\nUser follow-up: {request.Message}";
+                        botReply = await CallLLM_Gemini(followupPrompt, apiKey, endpoint, request);
+
+                        await SaveAgentResponse(request, "FollowupQuery", followupPrompt, lastDataset, botReply);
+                    }
+                    else if (IsFollowUpQuestion(request.Message) && lastFollowup != null && !string.IsNullOrEmpty(lastFollowup.response))
+                    {
+                        // If the last follow-up query has a response, use it to generate a new response
+                        string followupPrompt = $"{lastFollowup.response}\n\nUser follow-up: {request.Message}";
+                        botReply = await CallLLM_Gemini(followupPrompt, apiKey, endpoint, request);
+
+                        await SaveAgentResponse(request, "FollowupQuery", followupPrompt, lastFollowup.response, botReply);
+                    }
+                    else if (lastChat != null && !string.IsNullOrEmpty(lastChat.response))
+                    {
+
+                        string followupPrompt = $"{lastChat.response}\n\nUser follow-up: {request.Message}";
+                        botReply = await CallLLM_Gemini(followupPrompt, apiKey, endpoint, request);
+
+                        await SaveAgentResponse(request, "FollowupQuery", followupPrompt, lastChat.response, botReply);
+                    }
+                    else
+                    {
+                        botReply = "❌ No previous dataset found. Please provide a valid context.";
+                    }
+                }
+                else
+                {
+                    var lastChatgemini = await _context.AgentResponses
+                        .Where(x => x.userid == request.UserId && x.sessionid == request.SessionId && x.type == "GeminiResponse")
+                        .OrderByDescending(x => x.createdat)
+                        .FirstOrDefaultAsync();
+
+                    if (lastChatgemini != null && !string.IsNullOrEmpty(lastChatgemini.response))
+                    {
+                        // Use the last Gemini response as context for the follow-up
+                        string followupPrompt = $"{lastChatgemini.response}\n\nUser follow-up: {request.Message}";
+                        botReply = await CallLLM_Gemini(followupPrompt, apiKey, endpoint, request);
+
+                        await SaveAgentResponse(request, "FollowupQuery", followupPrompt, lastChatgemini.response, botReply);
+                    }
+                    else
+                    {
+
+                        // Handle general follow-up without specific context
+                        string followUpPrompt = $"User says: '{request.Message}'. Respond like a helpful human assistant, no need to restate earlier information.";
+                        botReply = await CallLLM_Gemini(followUpPrompt, apiKey, endpoint, request);
+                    }
+                }
             }
             else
             {
@@ -101,15 +199,17 @@ namespace DummyDataDog.Controllers
             var chatLog = new ChatLog
             {
                 UserId = request.UserId,
+                SessionId = request.SessionId,   // ✅ New
                 Prompt = request.Message,
                 Response = botReply,
                 CreatedAt = DateTime.UtcNow,
                 ProjectId = projectId,
                 DataType = dataType,
                 TimeRange = userMessage.Contains("from") && userMessage.Contains("to")
-                    ? userMessage.Substring(userMessage.IndexOf("from"))
-                    : null
+                ? userMessage[userMessage.IndexOf("from")..]
+                : null
             };
+
 
             _context.ChatLogs.Add(chatLog);
             await _context.SaveChangesAsync();
@@ -117,7 +217,23 @@ namespace DummyDataDog.Controllers
             return Ok(new { reply = botReply });
         }
 
-        private async Task<string> CallLLM_Gemini(string prompt, string apiKey, string endpoint)
+        private static bool IsFollowUpQuestion(string message)
+        {
+            string lowerMessage = message.ToLower();
+            string[] followUpKeywords = new[] { "what", "where", "when", "why", "how", "help me", "which", "who", "give me", "tell me" };
+
+            bool containsKeyword = followUpKeywords.Any(keyword => lowerMessage.Contains(keyword));
+
+            bool isKnownFlowCommand = lowerMessage.Contains("alerts") || lowerMessage.Contains("logs")
+                || lowerMessage.Contains("metrics") || lowerMessage.Contains("services")
+                || lowerMessage.StartsWith("from") || lowerMessage.StartsWith("to")
+                || lowerMessage.Equals("hi") || lowerMessage.Equals("hello");
+
+            return containsKeyword && !isKnownFlowCommand;
+        }
+
+
+        private async Task<string> CallLLM_Gemini(string prompt, string apiKey, string endpoint, ChatRequest request)
         {
             var url = $"{endpoint}?key={apiKey}";
 
@@ -143,6 +259,13 @@ namespace DummyDataDog.Controllers
 
             if (response.IsSuccessStatusCode)
             {
+                await SaveAgentResponse(
+                    new ChatRequest { UserId = 0, Message = request.Message, ProjectId = request.ProjectId, DataType = request.DataType, SessionId = request.SessionId },
+                    "GeminiResponse",
+                    prompt,
+                    json,
+                    responseString
+                );
                 return ParseGeminiResponse(responseString);
             }
             else
@@ -150,8 +273,25 @@ namespace DummyDataDog.Controllers
                 return "❌ Gemini API Error: " + responseString;
             }
         }
+        private async Task SaveAgentResponse(ChatRequest request, string type, string prompt, string dataSent, string aiResponse)
+        {
+            var agentResponse = new AgentResponse
+            {
+                userid = request.UserId,
+                sessionid = request.SessionId,
+                type = type,
+                createdat = DateTime.UtcNow,
+                prompt = prompt,
+                datasent = dataSent,
+                response = aiResponse
+            };
 
-        private string ParseGeminiResponse(string jsonResponse)
+            _context.AgentResponses.Add(agentResponse);
+            await _context.SaveChangesAsync();
+        }
+
+
+        private static string ParseGeminiResponse(string jsonResponse)
         {
             try
             {
@@ -211,7 +351,7 @@ namespace DummyDataDog.Controllers
             return null;
         }
 
-        private DateTime? ParseNaturalDateTime(string text)
+        private static DateTime? ParseNaturalDateTime(string text)
         {
             DateTime now = DateTime.UtcNow;
             text = text.ToLower();
@@ -232,7 +372,7 @@ namespace DummyDataDog.Controllers
             return null;
         }
 
-        private async Task<string> FetchDataForLLM(int projectId, string dataType, DateTime from, DateTime to)
+        private async Task<string> FetchDataForLLM(ChatRequest request, int projectId, string dataType, DateTime from, DateTime to)
         {
             var sb = new StringBuilder();
 
@@ -298,6 +438,8 @@ namespace DummyDataDog.Controllers
                     break;
             }
 
+            await SaveAgentResponse(request, "MainDataset", request.Message, sb.ToString(), "Data fetched successfully");
+
             sb.AppendLine();
             sb.AppendLine("===== ANALYSIS REQUEST =====");
             sb.AppendLine("Please analyze the above data and provide:");
@@ -308,6 +450,7 @@ namespace DummyDataDog.Controllers
             sb.AppendLine("If no significant issues are found, please mention that explicitly.");
 
             return sb.ToString();
+
         }
     }
 
@@ -317,5 +460,6 @@ namespace DummyDataDog.Controllers
         public string Message { get; set; }
         public int ProjectId { get; set; }
         public string DataType { get; set; }
+        public string SessionId { get; set; }
     }
 }
